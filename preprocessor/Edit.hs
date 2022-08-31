@@ -8,6 +8,7 @@ import Data.Maybe
 import Data.Char
 import Data.List.Extra
 import Control.Monad.Extra
+import Debug.Trace
 
 recordDotPreprocessor :: FilePath -> String -> String
 recordDotPreprocessor original = unlexerFile (Just original) . unparens . edit . parens . lexer
@@ -30,6 +31,7 @@ unL = lexeme
 mkL x = Lexeme 0 0 x ""
 
 pattern L x <- (unL -> x)
+pattern LW x <- (whitespace -> x)
 
 -- Projecting in on the lexeme inside an Item
 type PL = Paren L
@@ -37,8 +39,16 @@ type PL = Paren L
 unPL (Item (L x)) = Just x
 unPL _ = Nothing
 
+-- get the whitespace String of a Paren item
+unPLW (Item (LW x)) = Just x
+unPLW _ = Nothing
+
+
 -- check if the Paren y is an Item containing x
 isPL x y = unPL y == Just x
+
+-- check if the Paren y is an Item containing whitespace x
+isPLW x y = maybe False id $ isInfixOf x <$> unPLW y
 
 -- match the String wrapped by a Paren Item Lexeme
 pattern PL x <- (unPL -> Just x)
@@ -72,7 +82,8 @@ addWhite w x = setWhite (getWhite x ++ w) x
 -- | Get the whitespace of the given item
 getWhite :: PL -> String
 getWhite (Item x) = whitespace x
-getWhite (Paren _ _ x) = whitespace x
+getWhite (Paren _ _ x) = whitespace x 
+getWhite (Indent _ _) = ""
 
 -- | Set the whitespace of the given item
 setWhite :: String -> PL -> PL
@@ -326,6 +337,13 @@ parseRecords = mapMaybe whole . drop1 . split (isPL "data" ||^ isPL "newtype")
             , xs <- dropWhile (isPL "::") xs
             -- drop the context
             , xs <- dropContext xs
+            = body ctorName xs
+
+        ctor _ = []
+
+        body ctorName xs
+          -- "{" block
+          | xs <- dropWhile (isPL "with") xs -- drop optional "with"
             -- if the first element is a parenthesis, then parse the fields
             , Paren (L "{") inner _ : xs <- xs
             = Ctor ctorName (fields $ map (break (isPL "::")) $ split (isPL ",") inner) :
@@ -333,7 +351,25 @@ parseRecords = mapMaybe whole . drop1 . split (isPL "data" ||^ isPL "newtype")
               case xs of
                 PL "|":xs -> ctor xs
                 _ -> []
-        ctor _ = []
+          -- identation aware "with" block
+          | Indent (L "with") inner : xs <- xs
+            = Ctor ctorName (fields $ map (break (isPL "::")) $ split (isPLW "\n") inner) :
+              -- if the first element is "|", then parse the next constructor
+              case xs of
+                PL "|":xs -> ctor xs
+                _ -> []
+          -- single-line 'with' block, comma delimited
+          | Paren (L "with") inner _ : xs <- xs
+            = Ctor ctorName (fields $ map (break (isPL "::")) $ split (isPL ",") inner) :
+              -- if the first element is "|", then parse the next constructor
+              case xs of
+                PL "|":xs -> ctor xs
+                _ -> [] 
+
+
+
+
+
 
         -- we don't use a full parser so dealing with context like
         --   Num a => V3 { xx, yy, zz :: a }
