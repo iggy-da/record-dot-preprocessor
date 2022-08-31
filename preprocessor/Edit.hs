@@ -25,19 +25,29 @@ recordDotPreprocessorOnFragment = unlexerFile Nothing . unparens . editLoop . pa
 -- Projecting in on the 'lexeme' inside
 type L = Lexeme
 unL = lexeme
+
+-- create an empty Lexeme
 mkL x = Lexeme 0 0 x ""
+
 pattern L x <- (unL -> x)
 
 -- Projecting in on the lexeme inside an Item
 type PL = Paren L
+-- get the inner String of a Paren item
 unPL (Item (L x)) = Just x
 unPL _ = Nothing
+
+-- check if the Paren y is an Item containing x
 isPL x y = unPL y == Just x
+
+-- match the String wrapped by a Paren Item Lexeme
 pattern PL x <- (unPL -> Just x)
+
+-- create an empty Paren Item
 mkPL = Item . mkL
 
 -- Whitespace
-pattern NoW x <- (\v -> if null $ getWhite v
+pattern NoW x <- (\v -> if null $ getWhite v then Just v else Nothing -> Just x)
 
 
 -- | Parenthesise the given list of items
@@ -73,6 +83,24 @@ setWhite w (Paren x y z) = Paren x y z{whitespace=w}
 isCtor :: PL -> Bool
 isCtor (Item x) = any isUpper $ take 1 $ lexeme x
 isCtor _ = False
+
+-- | This test does not check that the @quoter@ name is a qualified identifier,
+-- instead relying on lack of whitespace in the opener and existence of a paired
+-- closed (@|]@)
+isQuasiQuotation :: PL -> Bool
+isQuasiQuotation (Paren open@(L "[") inner@(_:_) (L "]"))
+    | null (whitespace open)
+    , qname inner
+    , Item close@(L op) <- last inner
+    , "|" `isSuffixOf` op
+    , null (whitespace close)
+    = True
+    where
+        -- a (potentially) qualified name with no whitespace near it, ending with |
+        qname (Item a@(L _) : Item b@(L ".") : c) | null (whitespace a), null (whitespace b) = qname c
+        qname (Item a@(L _) : Item (L x):_) = "|" `isPrefixOf` x
+        qname _ = False
+isQuasiQuotation _ = False
 
 -- | Is the given string a field?
 isField :: String -> Bool
