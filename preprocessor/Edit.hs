@@ -23,6 +23,8 @@ recordDotPreprocessorOnFragment = unlexerFile Nothing . unparens . editLoop . pa
 ---------------------------------------------------------------------
 -- HELPERS
 
+ofType = ":" -- ofType in standard haskell
+
 -- Projecting in on the 'lexeme' inside
 type L = Lexeme
 unL = lexeme
@@ -185,9 +187,9 @@ editLoop (Paren start@(L "(") (spanFields -> (fields@(_:_), whitespace, [])) end
 
 -- e{b.c=d, ...} ==> setField @'(b,c) d
 editLoop (e:Paren (L "{") inner end:xs)
-    -- if the first element is not a constructor, and the first element is not "::", and the first element has no whitespace
+    -- if the first element is not a constructor, and the first element is not ofType, and the first element has no whitespace
     | not $ isCtor e
-    , not $ isPL "::" e
+    , not $ isPL ofType e
     , getWhite e == ""
     -- then split the inner on ",", and for each element, if it is a field, then get the field name, and the operator and body
     , Just updates <- mapM f $ split (isPL ",") inner
@@ -209,7 +211,6 @@ editLoop (e:Paren (L "{") inner end:xs)
         -- if the body is empty, then the body is Nothing, else the body is Just the body
         g fields (op:xs) = Just (fields, if isPL "=" op then Nothing else Just op, Just $ paren xs)
         g fields [] = Just (fields, Nothing, Nothing)
-
 
 -- | If the first element is a parenthesis, then recurse on the inner
 editLoop (Paren a b c:xs) = Paren a (editLoop b) c : editLoop xs
@@ -311,12 +312,20 @@ data Ctor = Ctor
 
 -- | Find all the records and parse them
 parseRecords :: [PL] -> [Record]
-parseRecords = mapMaybe whole . drop1 . split (isPL "data" ||^ isPL "newtype")
+parseRecords = mapMaybe whole . drop1 . splitL (isPL "data" ||^ isPL "newtype" ||^ isPL "template" ||^ isPL "choice")
     where
         -- if the first element is "data" or "newtype", then parse the record
         whole :: [PL] -> Maybe Record
         whole xs
-            | PL typeName : xs <- xs
+            | x:xs <- xs
+            , isPL "template" x || isPL "choice" x
+            , PL typeName : xs <- xs
+            -- TODO:
+            -- , xs <- if (isPL "choice" x) then dropWhile (not . (isPL "with")) xs else xs
+            = Just $ Record typeName (mapMaybe typeArg []) $ body typeName xs
+        whole xs
+            | PL declaration : xs <- xs
+            , PL typeName : xs <- xs
             -- if the first element is a type name, and the second element is "=", or "where"
             , (typeArgs, _:xs) <- break (isPL "=" ||^ isPL "where") xs
             = Just $ Record typeName (mapMaybe typeArg typeArgs) $ ctor xs
@@ -334,7 +343,7 @@ parseRecords = mapMaybe whole . drop1 . split (isPL "data" ||^ isPL "newtype")
             -- if the first element is a constructor name, then parse the constructor
             , PL ctorName : xs <- xs
             -- drop the type signature
-            , xs <- dropWhile (isPL "::") xs
+            , xs <- dropWhile (isPL ofType) xs
             -- drop the context
             , xs <- dropContext xs
             = body ctorName xs
@@ -346,29 +355,26 @@ parseRecords = mapMaybe whole . drop1 . split (isPL "data" ||^ isPL "newtype")
           | xs <- dropWhile (isPL "with") xs -- drop optional "with"
             -- if the first element is a parenthesis, then parse the fields
             , Paren (L "{") inner _ : xs <- xs
-            = Ctor ctorName (fields $ map (break (isPL "::")) $ split (isPL ",") inner) :
+            = Ctor ctorName (fields $ map (break (isPL ofType)) $ split (isPL ",") inner) :
               -- if the first element is "|", then parse the next constructor
               case xs of
                 PL "|":xs -> ctor xs
                 _ -> []
-          -- identation aware "with" block
+          -- identation aware "with" block (multi-line, no "{")
           | Indent (L "with") inner : xs <- xs
-            = Ctor ctorName (fields $ map (break (isPL "::")) $ split (isPLW "\n") inner) :
+            = Ctor ctorName (fields $ map (break (isPL ofType)) $ split (isPLW "\n") inner) :
               -- if the first element is "|", then parse the next constructor
               case xs of
                 PL "|":xs -> ctor xs
                 _ -> []
           -- single-line 'with' block, comma delimited
           | Paren (L "with") inner _ : xs <- xs
-            = Ctor ctorName (fields $ map (break (isPL "::")) $ split (isPL ",") inner) :
+            = Ctor ctorName (fields $ map (break (isPL ofType)) $ split (isPL ",") inner) :
               -- if the first element is "|", then parse the next constructor
               case xs of
                 PL "|":xs -> ctor xs
                 _ -> [] 
-
-
-
-
+        body _ _ = []
 
 
         -- we don't use a full parser so dealing with context like
@@ -386,3 +392,9 @@ parseRecords = mapMaybe whole . drop1 . split (isPL "data" ||^ isPL "newtype")
         -- if the user has a trailing comment want to rip it out so our brackets still work
         unlexer = concatMap $ \x -> lexeme x ++ [' ' | whitespace x /= ""]
 
+splitL :: (PL -> Bool) -> [PL] -> [[PL]]
+splitL f pls = case break f pls of
+                (a, delim:b) ->
+                  let next:rest = splitL f b
+                  in a : (delim : next) : rest
+                (a, b) | length b == 0    -> [a]

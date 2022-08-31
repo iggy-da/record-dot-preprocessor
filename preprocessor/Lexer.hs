@@ -48,7 +48,7 @@ lexer = go1 1 1
             -- take next whitespaces (can be empty)
             , (whitespace, xs) <- lexerWhitespace xs
             -- update position based on whitespaces and lexeme
-            , (line2, col2) <- reposition line col $ whitespace ++ lexeme -- update position
+            , (line2, col2) <- reposition line col $ lexeme ++ whitespace -- update position
             = Lexeme{..} : go line2 col2 xs
 
 
